@@ -5,6 +5,7 @@ import cookieParser from "cookie-parser";
 import authRoutes from "./routes/auth.route.js";
 import githubRoutes from "./routes/github.route.js";
 import repositoryRoutes from "./routes/repository.route.js";
+import badgeRoutes from "./routes/badge.route.js";
 import { captureRawBody } from "./middleware/webhook.middleware.js";
 
 const app = express();
@@ -33,5 +34,6 @@ app.use(morgan("dev"));
 app.use("/auth", authRoutes);
 app.use("/github", githubRoutes);
 app.use("/api/repositories", repositoryRoutes);
+app.use("/api/badges", badgeRoutes);
 
 export default app;
