@@ -3,16 +3,17 @@ import Badge from "../models/badge.model.js";
 import UserBadge from "../models/user-badge.model.js";
 import PullRequest from "../models/pull-request.model.js";
 import User from "../models/user.model.js";
+import UserRepository from "../models/user-repository.model.js";
 import mongoose from "mongoose";
 
 class BadgeService {
   /**
    * Import repositories and create default badges
-   * @param {ObjectId} ownerId - The user ID who owns the repositories
-   * @param {Array} githubRepos - Array of GitHub repository data
+   * @param {ObjectId} userId - The user ID who is importing the repositories
+   * @param {Array} githubRepos - Array of GitHub repository data (with userRole property)
    * @returns {Object} - Import results with created repositories and badges
    */
-  static async importRepositories(ownerId, githubRepos) {
+  static async importRepositories(userId, githubRepos) {
     const session = await mongoose.startSession();
     const results = {
       success: true,
@@ -26,11 +27,14 @@ class BadgeService {
       await session.withTransaction(async () => {
         for (const githubRepo of githubRepos) {
           try {
+            const userRole = githubRepo.userRole || "contributor";
+
             // Check if repository already exists
             let repository = await Repository.findOne({
               githubId: githubRepo.id,
             }).session(session);
 
+            let isNewRepo = false;
             if (repository) {
               // Update existing repository
               await repository.syncData(githubRepo);
@@ -38,13 +42,29 @@ class BadgeService {
                 id: repository._id,
                 name: repository.name,
                 fullName: repository.fullName,
+                role: userRole,
               });
             } else {
+              isNewRepo = true;
+              // For new repositories, we need to determine the actual owner
+              // The owner in our system should be the GitHub repo owner, not necessarily the importing user
+              let repoOwnerId = userId; // Default fallback
+
+              // Try to find the GitHub repo owner in our system
+              if (githubRepo.owner && githubRepo.owner.login) {
+                const repoOwner = await User.findOne({
+                  githubUsername: githubRepo.owner.login,
+                }).session(session);
+                if (repoOwner) {
+                  repoOwnerId = repoOwner._id;
+                }
+              }
+
               // Create new repository
               repository = new Repository({
                 name: githubRepo.name,
                 fullName: githubRepo.full_name,
-                owner: ownerId,
+                owner: repoOwnerId,
                 description: githubRepo.description,
                 language: githubRepo.language,
                 private: githubRepo.private,
@@ -59,26 +79,37 @@ class BadgeService {
 
               await repository.save({ session });
 
-              // Create default badges for the repository
-              const badges = await Badge.createDefaultBadges(
-                repository._id,
-                ownerId
-              );
+              // Create default badges for the repository (only if user is owner)
+              if (userRole === "owner") {
+                const badges = await Badge.createDefaultBadges(
+                  repository._id,
+                  userId
+                );
 
-              if (badges.length > 0) {
-                // Link badges to repository
-                repository.badges = badges.map((badge) => badge._id);
-                await repository.save({ session });
-                results.badgesCreated += badges.length;
+                if (badges.length > 0) {
+                  // Link badges to repository
+                  repository.badges = badges.map((badge) => badge._id);
+                  await repository.save({ session });
+                  results.badgesCreated += badges.length;
+                }
               }
 
               results.imported.push({
                 id: repository._id,
                 name: repository.name,
                 fullName: repository.fullName,
-                badgeCount: badges.length,
+                role: userRole,
+                badgeCount:
+                  userRole === "owner" ? repository.badges?.length || 0 : 0,
               });
             }
+
+            // Create or update UserRepository relationship
+            await UserRepository.addUserToRepository(
+              userId,
+              repository._id,
+              userRole
+            );
           } catch (error) {
             console.error(
               `Error importing repository ${githubRepo.full_name}:`,

@@ -2,6 +2,7 @@ import axios from "axios";
 import { ApiResponse } from "../utils/api-response.js";
 import User from "../models/user.model.js";
 import Repository from "../models/repository.model.js";
+import UserRepository from "../models/user-repository.model.js";
 import BadgeService from "../services/badgeService.js";
 
 /**
@@ -25,7 +26,7 @@ const importRepositories = async (req, res) => {
 
     // Get user with GitHub access token
     const user = await User.findById(userId);
-    if (!user || !user.githubAccessToken) {
+    if (!user || !user.githubToken) {
       return res
         .status(400)
         .json(new ApiResponse(400, "GitHub access token not found"));
@@ -41,20 +42,18 @@ const importRepositories = async (req, res) => {
           `https://api.github.com/repositories/${repoId}`,
           {
             headers: {
-              Authorization: `Bearer ${user.githubAccessToken}`,
+              Authorization: `Bearer ${user.githubToken}`,
               Accept: "application/vnd.github.v3+json",
             },
           }
         );
 
-        // Verify user owns this repository
-        if (response.data.owner.login !== user.githubUsername) {
-          errors.push({
-            repositoryId: repoId,
-            error: "You can only import repositories you own",
-          });
-          continue;
-        }
+        // Determine user's role in the repository
+        const isOwner = response.data.owner.login === user.githubUsername;
+        const role = isOwner ? "owner" : "contributor";
+
+        // Add role information to the repo data
+        response.data.userRole = role;
 
         githubRepos.push(response.data);
       } catch (error) {
@@ -70,13 +69,11 @@ const importRepositories = async (req, res) => {
     }
 
     if (githubRepos.length === 0) {
-      return res
-        .status(400)
-        .json(
-          new ApiResponse(400, "No valid repositories found to import", {
-            errors,
-          })
-        );
+      return res.status(400).json(
+        new ApiResponse(400, "No valid repositories found to import", {
+          errors,
+        })
+      );
     }
 
     // Import repositories using BadgeService
@@ -124,44 +121,54 @@ const importRepositories = async (req, res) => {
 const getUserRepositories = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { page = 1, limit = 20, search = "" } = req.query;
+    const { page = 1, limit = 20, search = "", role = null } = req.query;
 
-    const query = { owner: userId, active: true };
+    // Get user's repositories through UserRepository relationship
+    const userRepositories = await UserRepository.getUserRepositories(userId, {
+      page,
+      limit,
+      role,
+    });
+
+    // Filter repositories and add search functionality
+    let filteredRepos = userRepositories.filter((ur) => ur.repository); // Only include valid populated repositories
 
     // Add search filter if provided
     if (search.trim()) {
-      query.$or = [
-        { name: { $regex: search, $options: "i" } },
-        { fullName: { $regex: search, $options: "i" } },
-        { description: { $regex: search, $options: "i" } },
-      ];
+      filteredRepos = filteredRepos.filter((ur) => {
+        const repo = ur.repository;
+        return (
+          repo.name.toLowerCase().includes(search.toLowerCase()) ||
+          repo.fullName.toLowerCase().includes(search.toLowerCase()) ||
+          (repo.description &&
+            repo.description.toLowerCase().includes(search.toLowerCase()))
+        );
+      });
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    // Transform the data to include role information
+    const repositories = filteredRepos.map((ur) => ({
+      ...ur.repository.toObject(),
+      userRole: ur.role,
+      importedAt: ur.importedAt,
+      permissions: ur.permissions,
+    }));
 
-    const [repositories, total] = await Promise.all([
-      Repository.find(query)
-        .populate(
-          "badges",
-          "name description icon color difficulty criteriaType criteriaValue"
-        )
-        .populate({
-          path: "badgeCount",
-        })
-        .sort({ lastSyncAt: -1 })
-        .skip(skip)
-        .limit(parseInt(limit)),
-      Repository.countDocuments(query),
-    ]);
+    // Get total count for pagination
+    const totalUserRepos = await UserRepository.countDocuments({
+      user: userId,
+      active: true,
+      ...(role && { role }),
+    });
 
     return res.status(200).json(
       new ApiResponse(200, "Repositories retrieved successfully", {
         repositories,
         pagination: {
-          total,
+          total: totalUserRepos,
           page: parseInt(page),
           limit: parseInt(limit),
-          pages: Math.ceil(total / parseInt(limit)),
+          pages: Math.ceil(totalUserRepos / parseInt(limit)),
         },
       })
     );
@@ -182,16 +189,23 @@ const getRepositoryDetails = async (req, res) => {
     const { id } = req.params;
     const userId = req.user._id;
 
-    const repository = await Repository.findOne({
-      _id: id,
-      owner: userId,
+    // Check if user has access to this repository through UserRepository
+    const userRepository = await UserRepository.findOne({
+      user: userId,
+      repository: id,
       active: true,
-    })
-      .populate("owner", "email githubUsername")
-      .populate("badges");
+    }).populate({
+      path: "repository",
+      populate: [
+        { path: "owner", select: "email githubUsername" },
+        { path: "badges" },
+      ],
+    });
 
-    if (!repository) {
-      return res.status(404).json(new ApiResponse(404, "Repository not found"));
+    if (!userRepository || !userRepository.repository) {
+      return res
+        .status(404)
+        .json(new ApiResponse(404, "Repository not found or access denied"));
     }
 
     // Get badge statistics
@@ -199,7 +213,12 @@ const getRepositoryDetails = async (req, res) => {
 
     return res.status(200).json(
       new ApiResponse(200, "Repository details retrieved", {
-        repository,
+        repository: {
+          ...userRepository.repository.toObject(),
+          userRole: userRepository.role,
+          permissions: userRepository.permissions,
+          importedAt: userRepository.importedAt,
+        },
         badgeStats,
       })
     );
@@ -231,7 +250,7 @@ const syncRepository = async (req, res) => {
     }
 
     const user = await User.findById(userId);
-    if (!user || !user.githubAccessToken) {
+    if (!user || !user.githubToken) {
       return res
         .status(400)
         .json(new ApiResponse(400, "GitHub access token not found"));
@@ -242,7 +261,7 @@ const syncRepository = async (req, res) => {
       `https://api.github.com/repositories/${repository.githubId}`,
       {
         headers: {
-          Authorization: `Bearer ${user.githubAccessToken}`,
+          Authorization: `Bearer ${user.githubToken}`,
           Accept: "application/vnd.github.v3+json",
         },
       }
