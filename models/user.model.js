@@ -1,10 +1,10 @@
 import mongoose from "mongoose";
 
 const userSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
+  email: { type: String, required: false },
 
   githubId: { type: String, required: true, unique: true },
-  githubUsername: { type: String, required: true },
+  githubUsername: { type: String, required: true, unique: true },
   githubToken: String,
 
   onboardingComplete: { type: Boolean, default: true },

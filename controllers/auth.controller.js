@@ -6,8 +6,7 @@ import { generateToken, getCookieOptions } from "../utils/jwt.js";
 const githubRedirect = (req, res) => {
   const clientId = process.env.GITHUB_CLIENT_ID;
   const redirectUri = process.env.GITHUB_CALLBACK_URL;
-  const scope =
-    "repo:status repo_deployment public_repo read:repo_hook read:org read:user user:email";
+  const scope = "user:email";
 
   const url = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(
     redirectUri
@@ -47,25 +46,43 @@ const githubCallback = async (req, res) => {
       headers: { Authorization: `token ${accessToken}` },
     });
 
-    const ghEmailsRes = await axios.get("https://api.github.com/user/emails", {
-      headers: { Authorization: `token ${accessToken}` },
-    });
+    const {
+      id: githubId,
+      login: githubUsername,
+      email: profileEmail,
+    } = ghUserRes.data;
 
-    const { id: githubId, login: githubUsername } = ghUserRes.data;
-    const primaryEmailObj = Array.isArray(ghEmailsRes.data)
-      ? ghEmailsRes.data.find((e) => e.primary) || ghEmailsRes.data[0]
-      : null;
-    const email = primaryEmailObj ? primaryEmailObj.email : null;
+    let email = profileEmail; // Try to get email from profile first
+
+    // If no email in profile, try to fetch from emails endpoint
+    if (!email) {
+      try {
+        const ghEmailsRes = await axios.get(
+          "https://api.github.com/user/emails",
+          {
+            headers: { Authorization: `token ${accessToken}` },
+          }
+        );
+
+        const primaryEmailObj = Array.isArray(ghEmailsRes.data)
+          ? ghEmailsRes.data.find((e) => e.primary) || ghEmailsRes.data[0]
+          : null;
+        email = primaryEmailObj ? primaryEmailObj.email : null;
+      } catch (emailError) {
+        console.warn(
+          "Could not fetch user emails:",
+          emailError.response?.data?.message || emailError.message
+        );
+        // Continue without email for now
+      }
+    }
 
     if (!email) {
-      return res
-        .status(400)
-        .json(
-          new ApiResponse(
-            400,
-            "GitHub did not provide an email. Please ensure your GitHub email is public."
-          )
-        );
+      // If we can't get email, use a fallback format with GitHub username
+      email = `${githubUsername}@github.local`;
+      console.warn(
+        `No email available for user ${githubUsername}, using fallback: ${email}`
+      );
     }
 
     // Check if user exists by GitHub ID
