@@ -55,6 +55,7 @@ const githubCallback = async (req, res) => {
       id: githubId,
       login: githubUsername,
       email: profileEmail,
+      avatar_url: githubAvatar,
     } = ghUserRes.data;
 
     let email = profileEmail; // Try to get email from profile first
@@ -97,6 +98,7 @@ const githubCallback = async (req, res) => {
       user.githubToken = accessToken;
       user.githubUsername = githubUsername;
       user.email = email; // Update email in case it changed on GitHub
+      user.githubAvatar = githubAvatar;
       await user.save();
     } else {
       // Create new user from GitHub info
@@ -105,6 +107,7 @@ const githubCallback = async (req, res) => {
         githubId,
         githubUsername,
         githubToken: accessToken,
+        githubAvatar,
         onboardingComplete: true,
       });
     }
@@ -196,6 +199,7 @@ const getCurrentUser = (req, res) => {
         email: user.email,
         githubId: user.githubId,
         githubUsername: user.githubUsername,
+        githubAvatar: user.githubAvatar,
         onboardingComplete: user.onboardingComplete,
       })
     );
