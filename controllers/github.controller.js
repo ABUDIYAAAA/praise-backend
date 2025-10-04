@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import axios from "axios";
 import { ApiResponse } from "../utils/api-response.js";
 import User from "../models/user.model.js";
 import WebhookEvent from "../models/webhook-event.model.js";
@@ -361,4 +362,76 @@ const getEventDetails = async (req, res) => {
   }
 };
 
-export { handleWebhook, getUserEvents, getEventDetails };
+/**
+ * Fetch user's GitHub repositories
+ * GET /api/github/repositories
+ */
+const getUserRepositories = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+
+    if (!user || !user.githubToken) {
+      return res
+        .status(400)
+        .json(new ApiResponse(400, "GitHub access token not found"));
+    }
+
+    // Fetch repositories from GitHub API
+    const response = await axios.get("https://api.github.com/user/repos", {
+      headers: {
+        Authorization: `Bearer ${user.githubToken}`,
+        Accept: "application/vnd.github.v3+json",
+      },
+      params: {
+        visibility: "all", // Include both public and private repos
+        sort: "updated",
+        per_page: 100, // Maximum allowed per page
+      },
+    });
+
+    // Transform repository data to include only what we need
+    const repositories = response.data.map((repo) => ({
+      id: repo.id,
+      name: repo.name,
+      fullName: repo.full_name,
+      description: repo.description,
+      private: repo.private,
+      url: repo.html_url,
+      cloneUrl: repo.clone_url,
+      language: repo.language,
+      stargazersCount: repo.stargazers_count,
+      forksCount: repo.forks_count,
+      updatedAt: repo.updated_at,
+      createdAt: repo.created_at,
+      defaultBranch: repo.default_branch,
+      topics: repo.topics || [],
+      owner: {
+        login: repo.owner.login,
+        avatarUrl: repo.owner.avatar_url,
+      },
+    }));
+
+    return res.status(200).json(
+      new ApiResponse(200, "Repositories fetched successfully", {
+        repositories,
+        total: repositories.length,
+      })
+    );
+  } catch (error) {
+    console.error("GitHub API error:", error.response?.data || error.message);
+
+    if (error.response?.status === 401) {
+      return res
+        .status(401)
+        .json(
+          new ApiResponse(401, "GitHub access token is invalid or expired")
+        );
+    }
+
+    return res
+      .status(500)
+      .json(new ApiResponse(500, "Failed to fetch repositories"));
+  }
+};
+
+export { handleWebhook, getUserEvents, getEventDetails, getUserRepositories };

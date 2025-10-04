@@ -3,6 +3,7 @@ import {
   handleWebhook,
   getUserEvents,
   getEventDetails,
+  getUserRepositories,
 } from "../controllers/github.controller.js";
 import { authenticateToken } from "../middleware/auth.middleware.js";
 
@@ -13,6 +14,9 @@ const router = express.Router();
 router.post("/webhook", handleWebhook);
 
 // Protected endpoints (require authentication)
+// GET /github/repositories - Get user's GitHub repositories
+router.get("/repositories", authenticateToken, getUserRepositories);
+
 // GET /github/events - Get user's webhook events
 router.get("/events", authenticateToken, getUserEvents);
 
