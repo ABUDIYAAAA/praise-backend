@@ -1,7 +1,5 @@
 import express from "express";
 import {
-  login,
-  register,
   logout,
   getCurrentUser,
   githubRedirect,
@@ -11,11 +9,7 @@ import { authenticateToken } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
-// Public routes
-router.post("/register", register);
-router.post("/login", login);
-
-// GitHub OAuth
+// GitHub OAuth (public routes)
 router.get("/github", githubRedirect);
 router.get("/github/callback", githubCallback);
 
