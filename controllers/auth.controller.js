@@ -5,8 +5,13 @@ import { generateToken, getCookieOptions } from "../utils/jwt.js";
 
 const githubRedirect = (req, res) => {
   const clientId = process.env.GITHUB_CLIENT_ID;
-  const redirectUri = process.env.GITHUB_CALLBACK_URL;
+  let redirectUri = process.env.GITHUB_CALLBACK_URL;
   const scope = "user:email";
+
+  // Preserve the source parameter for extension detection
+  if (req.query.source === "extension") {
+    redirectUri += (redirectUri.includes("?") ? "&" : "?") + "source=extension";
+  }
 
   const url = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(
     redirectUri
@@ -107,6 +112,50 @@ const githubCallback = async (req, res) => {
     // Generate JWT token and set cookie
     const token = generateToken(user);
     res.cookie("authToken", token, getCookieOptions());
+
+    // Check if this is coming from extension (check referrer or add query param)
+    const isExtension =
+      req.query.source === "extension" ||
+      req.headers.origin?.startsWith("chrome-extension://") ||
+      req.headers.origin?.startsWith("moz-extension://");
+
+    if (isExtension) {
+      // Return a page that closes the popup and notifies the parent
+      return res.send(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Authentication Complete</title>
+          </head>
+          <body>
+            <div style="display: flex; justify-content: center; align-items: center; height: 100vh; font-family: Arial, sans-serif;">
+              <div style="text-align: center;">
+                <h2>✅ Authentication Successful!</h2>
+                <p>You can close this window now.</p>
+                <p style="color: #666; font-size: 14px;">Redirecting back to extension...</p>
+              </div>
+            </div>
+            <script>
+              // Notify parent window and close popup
+              if (window.opener) {
+                window.opener.postMessage({ type: 'AUTH_SUCCESS', user: ${JSON.stringify(
+                  {
+                    userId: user._id,
+                    email: user.email,
+                    githubUsername: user.githubUsername,
+                    onboardingComplete: user.onboardingComplete,
+                  }
+                )} }, '*');
+              }
+              // Close this popup window
+              setTimeout(() => {
+                window.close();
+              }, 2000);
+            </script>
+          </body>
+        </html>
+      `);
+    }
 
     return res.redirect(`${process.env.FRONTEND_URL}/home`);
   } catch (err) {
