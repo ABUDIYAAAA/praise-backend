@@ -20,7 +20,8 @@ app.use(
       "http://localhost:5173", // Frontend web app (dev)
       "http://localhost:5174", // Alternative dev port
       "http://localhost:4173", // Vite preview port
-      "https://praise-frontend-production.up.railway.app", // Add your deployed frontend URL
+      "https://praise-frontend-production.up.railway.app", // Railway deployment
+      "https://praise-frontend-swart.vercel.app", // Vercel deployment
       process.env.FRONTEND_URL, // Dynamic frontend URL from env
       /^chrome-extension:\/\//, // Chrome extension
       /^moz-extension:\/\//, // Firefox extension
