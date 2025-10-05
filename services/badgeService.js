@@ -5,6 +5,7 @@ import PullRequest from "../models/pull-request.model.js";
 import User from "../models/user.model.js";
 import UserRepository from "../models/user-repository.model.js";
 import mongoose from "mongoose";
+import axios from "axios";
 
 class BadgeService {
   /**
@@ -79,11 +80,17 @@ class BadgeService {
 
               await repository.save({ session });
 
-              // Create default badges for the repository (only if user is owner)
-              if (userRole === "owner") {
+              // Create default badges for the repository
+              // Check if badges already exist to avoid duplicates
+              const existingBadges = await Badge.find({
+                repository: repository._id,
+                isDefault: true,
+              }).session(session);
+
+              if (existingBadges.length === 0) {
                 const badges = await Badge.createDefaultBadges(
                   repository._id,
-                  userId
+                  userId // Creator is the importing user (could be owner or contributor)
                 );
 
                 if (badges.length > 0) {
@@ -94,13 +101,18 @@ class BadgeService {
                 }
               }
 
+              // Get badge count for the repository
+              const badgeCount = await Badge.countDocuments({
+                repository: repository._id,
+                active: true,
+              }).session(session);
+
               results.imported.push({
                 id: repository._id,
                 name: repository.name,
                 fullName: repository.fullName,
                 role: userRole,
-                badgeCount:
-                  userRole === "owner" ? repository.badges?.length || 0 : 0,
+                badgeCount,
               });
             }
 
@@ -247,64 +259,250 @@ class BadgeService {
   }
 
   /**
-   * Get contributor statistics for a repository
-   * @param {ObjectId} repoId - Repository ID
-   * @param {ObjectId} specificUserId - Optional specific user ID to check
+   * Fetch PR statistics from GitHub API for a user in a repository
+   * @param {Object} repository - Repository document
+   * @param {String} githubUsername - User's GitHub username
+   * @param {String} accessToken - User's GitHub access token
+   * @returns {Object} - PR statistics
+   */
+  static async fetchGitHubPRStats(repository, githubUsername, accessToken) {
+    try {
+      console.log("🔍 Fetching GitHub PR stats for:", {
+        repo: repository.fullName,
+        user: githubUsername,
+      });
+
+      const [owner, repoName] = repository.fullName.split("/");
+
+      // Fetch pull requests from GitHub API
+      let page = 1;
+      let allPRs = [];
+      let hasMore = true;
+
+      while (hasMore && page <= 10) {
+        // Limit to 10 pages (1000 PRs max)
+        const response = await axios.get(
+          `https://api.github.com/repos/${owner}/${repoName}/pulls`,
+          {
+            headers: {
+              Authorization: `token ${accessToken}`,
+              Accept: "application/vnd.github.v3+json",
+            },
+            params: {
+              state: "all", // Get open, closed, and merged PRs
+              per_page: 100,
+              page: page,
+            },
+          }
+        );
+
+        const prs = response.data;
+
+        // Filter PRs by the specific user
+        const userPRs = prs.filter((pr) => pr.user.login === githubUsername);
+        allPRs = allPRs.concat(userPRs);
+
+        hasMore = prs.length === 100; // If we got 100 PRs, there might be more
+        page++;
+      }
+
+      console.log("📊 Found PRs from GitHub API:", allPRs.length);
+
+      // Calculate statistics
+      const totalPRs = allPRs.length;
+      const mergedPRs = allPRs.filter((pr) => pr.merged_at !== null).length;
+      const openPRs = allPRs.filter((pr) => pr.state === "open").length;
+      const closedPRs = allPRs.filter(
+        (pr) => pr.state === "closed" && pr.merged_at === null
+      ).length;
+
+      // For commits, we'd need to make additional API calls, so let's estimate
+      // or fetch from a few recent PRs
+      let totalCommits = 0;
+      let totalAdditions = 0;
+      let totalDeletions = 0;
+
+      // Fetch commit details for merged PRs (limit to recent 10 for performance)
+      const recentMergedPRs = allPRs
+        .filter((pr) => pr.merged_at !== null)
+        .slice(0, 10);
+
+      for (const pr of recentMergedPRs) {
+        try {
+          const commitsResponse = await axios.get(pr.commits_url, {
+            headers: {
+              Authorization: `token ${accessToken}`,
+              Accept: "application/vnd.github.v3+json",
+            },
+          });
+          totalCommits += commitsResponse.data.length;
+
+          // Get PR details for additions/deletions
+          const prDetailsResponse = await axios.get(pr.url, {
+            headers: {
+              Authorization: `token ${accessToken}`,
+              Accept: "application/vnd.github.v3+json",
+            },
+          });
+
+          totalAdditions += prDetailsResponse.data.additions || 0;
+          totalDeletions += prDetailsResponse.data.deletions || 0;
+        } catch (error) {
+          console.warn("Could not fetch commit details for PR:", pr.number);
+        }
+      }
+
+      const stats = {
+        userId: githubUsername, // We'll resolve this to actual user ID later
+        githubUsername,
+        totalPRs,
+        mergedPRs,
+        openPRs,
+        closedPRs,
+        totalCommits,
+        totalAdditions,
+        totalDeletions,
+        totalFilesChanged: 0, // Would need additional API calls
+        firstContribution:
+          allPRs.length > 0
+            ? new Date(Math.min(...allPRs.map((pr) => new Date(pr.created_at))))
+            : null,
+        lastContribution:
+          allPRs.length > 0
+            ? new Date(Math.max(...allPRs.map((pr) => new Date(pr.created_at))))
+            : null,
+        totalLinesChanged: totalAdditions + totalDeletions,
+      };
+
+      console.log("🎯 GitHub PR Stats calculated:", stats);
+      return stats;
+    } catch (error) {
+      console.error(
+        "Error fetching GitHub PR stats:",
+        error.response?.data || error.message
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Get contributor statistics for a repository (now using GitHub API)
+   * @param {String|ObjectId} repoId - Repository ID
+   * @param {String|ObjectId} specificUserId - Optional specific user ID
    * @returns {Array} - Array of contributor statistics
    */
   static async getContributorStats(repoId, specificUserId = null) {
-    const matchStage = { repository: repoId };
-    if (specificUserId) {
-      matchStage.user = specificUserId;
-    }
+    console.log("🔍 getContributorStats called with:", {
+      repoId,
+      specificUserId,
+    });
 
-    const contributorStats = await PullRequest.aggregate([
-      { $match: matchStage },
-      {
-        $group: {
-          _id: "$user",
-          totalPRs: { $sum: 1 },
-          mergedPRs: {
-            $sum: { $cond: [{ $eq: ["$merged", true] }, 1, 0] },
+    try {
+      // Get repository details
+      const repository = await Repository.findById(repoId);
+      if (!repository) {
+        throw new Error("Repository not found");
+      }
+
+      // If specific user requested, get their details and fetch from GitHub
+      if (specificUserId) {
+        const user = await User.findById(specificUserId);
+        if (!user || !user.githubUsername || !user.githubToken) {
+          console.log("❌ User not found or missing GitHub credentials");
+          return [];
+        }
+
+        console.log("� Fetching live data from GitHub API...");
+        const githubStats = await this.fetchGitHubPRStats(
+          repository,
+          user.githubUsername,
+          user.githubToken
+        );
+
+        // Convert GitHub stats to our expected format
+        const contributorStats = [
+          {
+            userId: user._id,
+            userEmail: user.email,
+            githubUsername: user.githubUsername,
+            totalPRs: githubStats.totalPRs,
+            mergedPRs: githubStats.mergedPRs,
+            totalCommits: githubStats.totalCommits,
+            totalAdditions: githubStats.totalAdditions,
+            totalDeletions: githubStats.totalDeletions,
+            totalFilesChanged: githubStats.totalFilesChanged,
+            firstContribution: githubStats.firstContribution,
+            lastContribution: githubStats.lastContribution,
+            totalLinesChanged: githubStats.totalLinesChanged,
           },
-          totalCommits: { $sum: "$commitCount" },
-          totalAdditions: { $sum: "$additions" },
-          totalDeletions: { $sum: "$deletions" },
-          totalFilesChanged: { $sum: "$changedFiles" },
-          firstContribution: { $min: "$githubCreatedAt" },
-          lastContribution: { $max: "$githubCreatedAt" },
-        },
-      },
-      {
-        $lookup: {
-          from: "users",
-          localField: "_id",
-          foreignField: "_id",
-          as: "userDetails",
-        },
-      },
-      {
-        $unwind: "$userDetails",
-      },
-      {
-        $project: {
-          userId: "$_id",
-          userEmail: "$userDetails.email",
-          githubUsername: "$userDetails.githubUsername",
-          totalPRs: 1,
-          mergedPRs: 1,
-          totalCommits: 1,
-          totalAdditions: 1,
-          totalDeletions: 1,
-          totalFilesChanged: 1,
-          firstContribution: 1,
-          lastContribution: 1,
-          totalLinesChanged: { $add: ["$totalAdditions", "$totalDeletions"] },
-        },
-      },
-    ]);
+        ];
 
-    return contributorStats;
+        console.log("🎯 Live GitHub PR Stats:", {
+          username: user.githubUsername,
+          totalPRs: githubStats.totalPRs,
+          mergedPRs: githubStats.mergedPRs,
+          totalCommits: githubStats.totalCommits,
+        });
+
+        return contributorStats;
+      }
+
+      // If no specific user, fall back to database stats for all contributors
+      console.log(
+        "📊 Falling back to database aggregation for all contributors"
+      );
+
+      const contributorStats = await PullRequest.aggregate([
+        { $match: { repository: repoId } },
+        {
+          $group: {
+            _id: "$user",
+            totalPRs: { $sum: 1 },
+            mergedPRs: {
+              $sum: { $cond: [{ $eq: ["$merged", true] }, 1, 0] },
+            },
+            totalCommits: { $sum: "$commitCount" },
+            totalAdditions: { $sum: "$additions" },
+            totalDeletions: { $sum: "$deletions" },
+            totalFilesChanged: { $sum: "$changedFiles" },
+            firstContribution: { $min: "$githubCreatedAt" },
+            lastContribution: { $max: "$githubCreatedAt" },
+          },
+        },
+        {
+          $lookup: {
+            from: "users",
+            localField: "_id",
+            foreignField: "_id",
+            as: "userDetails",
+          },
+        },
+        {
+          $unwind: "$userDetails",
+        },
+        {
+          $project: {
+            userId: "$_id",
+            userEmail: "$userDetails.email",
+            githubUsername: "$userDetails.githubUsername",
+            totalPRs: 1,
+            mergedPRs: 1,
+            totalCommits: 1,
+            totalAdditions: 1,
+            totalDeletions: 1,
+            totalFilesChanged: 1,
+            firstContribution: 1,
+            lastContribution: 1,
+            totalLinesChanged: { $add: ["$totalAdditions", "$totalDeletions"] },
+          },
+        },
+      ]);
+
+      return contributorStats;
+    } catch (error) {
+      console.error("Error in getContributorStats:", error);
+      return [];
+    }
   }
 
   /**
