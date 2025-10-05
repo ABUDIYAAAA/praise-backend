@@ -322,14 +322,12 @@ class BadgeService {
       let totalAdditions = 0;
       let totalDeletions = 0;
 
-      // Fetch commit details for ALL merged PRs (not just recent 10)
-      const mergedPRsForCommits = allPRs.filter((pr) => pr.merged_at !== null);
+      // Fetch commit details for merged PRs (limit to recent 10 for performance)
+      const recentMergedPRs = allPRs
+        .filter((pr) => pr.merged_at !== null)
+        .slice(0, 10);
 
-      console.log(
-        `📝 Fetching commit details for ${mergedPRsForCommits.length} merged PRs...`
-      );
-
-      for (const pr of mergedPRsForCommits) {
+      for (const pr of recentMergedPRs) {
         try {
           const commitsResponse = await axios.get(pr.commits_url, {
             headers: {
@@ -354,47 +352,6 @@ class BadgeService {
         }
       }
 
-      // Also fetch direct commits that aren't part of PRs
-      try {
-        console.log("🔍 Fetching direct commits from GitHub API...");
-        let commitPage = 1;
-        let hasMoreCommits = true;
-        let directCommits = 0;
-
-        while (hasMoreCommits && commitPage <= 5) {
-          // Limit to 5 pages for performance
-          const commitsResponse = await axios.get(
-            `https://api.github.com/repos/${owner}/${repoName}/commits`,
-            {
-              headers: {
-                Authorization: `token ${accessToken}`,
-                Accept: "application/vnd.github.v3+json",
-              },
-              params: {
-                author: githubUsername,
-                per_page: 100,
-                page: commitPage,
-              },
-            }
-          );
-
-          const commits = commitsResponse.data;
-          directCommits += commits.length;
-
-          hasMoreCommits = commits.length === 100;
-          commitPage++;
-        }
-
-        console.log(
-          `📊 Found ${directCommits} direct commits by ${githubUsername}`
-        );
-
-        // Use the higher number between PR commits and direct commits
-        totalCommits = Math.max(totalCommits, directCommits);
-      } catch (error) {
-        console.warn("Could not fetch direct commits:", error.message);
-      }
-
       const stats = {
         userId: githubUsername, // We'll resolve this to actual user ID later
         githubUsername,
@@ -417,15 +374,7 @@ class BadgeService {
         totalLinesChanged: totalAdditions + totalDeletions,
       };
 
-      console.log("🎯 GitHub Stats Summary:", {
-        username: githubUsername,
-        totalPRs: stats.totalPRs,
-        mergedPRs: stats.mergedPRs,
-        totalCommits: stats.totalCommits,
-        totalLinesChanged: stats.totalLinesChanged,
-        repository: repository.fullName,
-      });
-
+      console.log("🎯 GitHub PR Stats calculated:", stats);
       return stats;
     } catch (error) {
       console.error(

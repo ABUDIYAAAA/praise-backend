@@ -51,7 +51,7 @@ export const getCookieOptions = () => {
   return {
     httpOnly: true, // Prevent XSS attacks
     secure: isProduction, // HTTPS only in production
-    sameSite: isProduction ? "strict" : "lax", // CSRF protection
+    sameSite: isProduction ? "none" : "lax", // Use "none" for cross-origin in production
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
     path: "/",
   };

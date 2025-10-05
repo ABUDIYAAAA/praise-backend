@@ -9,6 +9,13 @@ import { ApiResponse } from "../utils/api-response.js";
  */
 export const authenticateToken = async (req, res, next) => {
   try {
+    console.log("🔒 Auth middleware - Cookies received:", req.cookies);
+    console.log("🔒 Auth middleware - Headers:", {
+      origin: req.headers.origin,
+      authorization: req.headers.authorization,
+      cookie: req.headers.cookie,
+    });
+
     // Get token from cookie (preferred) or Authorization header
     let token = req.cookies?.authToken;
 
@@ -18,6 +25,8 @@ export const authenticateToken = async (req, res, next) => {
         token = authHeader.substring(7);
       }
     }
+
+    console.log("🎫 Token found:", token ? "YES" : "NO");
 
     if (!token) {
       return res

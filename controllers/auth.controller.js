@@ -114,7 +114,9 @@ const githubCallback = async (req, res) => {
 
     // Generate JWT token and set cookie
     const token = generateToken(user);
-    res.cookie("authToken", token, getCookieOptions());
+    const cookieOptions = getCookieOptions();
+    console.log("🍪 Setting cookie with options:", cookieOptions);
+    res.cookie("authToken", token, cookieOptions);
 
     // Check if this is coming from extension (check referrer or add query param)
     const isExtension =
@@ -170,13 +172,8 @@ const githubCallback = async (req, res) => {
 // POST /auth/logout
 const logout = (req, res) => {
   try {
-    // Clear the authentication cookie
-    res.clearCookie("authToken", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "strict" : "lax",
-      path: "/",
-    });
+    // Clear the authentication cookie using same options as when setting
+    res.clearCookie("authToken", getCookieOptions());
 
     return res
       .status(200)

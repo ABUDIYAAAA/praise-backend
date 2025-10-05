@@ -17,10 +17,14 @@ app.use(cookieParser());
 app.use(
   cors({
     origin: [
-      "http://localhost:5173", // Frontend web app
+      "http://localhost:5173", // Frontend web app (dev)
+      "http://localhost:5174", // Alternative dev port
+      "http://localhost:4173", // Vite preview port
+      "https://praise-frontend-production.up.railway.app", // Add your deployed frontend URL
+      process.env.FRONTEND_URL, // Dynamic frontend URL from env
       /^chrome-extension:\/\//, // Chrome extension
       /^moz-extension:\/\//, // Firefox extension
-    ],
+    ].filter(Boolean), // Remove any undefined values
     credentials: true,
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
