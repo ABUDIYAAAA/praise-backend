@@ -162,7 +162,11 @@ const githubCallback = async (req, res) => {
       `);
     }
 
-    return res.redirect(`${process.env.FRONTEND_URL}/home`);
+    // For web app (non-extension), include token in URL since cookies might not work cross-origin
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    return res.redirect(
+      `${frontendUrl}/home?token=${encodeURIComponent(token)}`
+    );
   } catch (err) {
     console.error(err.response?.data || err.message || err);
     return res.status(500).json(new ApiResponse(500, "GitHub callback failed"));
